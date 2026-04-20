@@ -1,6 +1,6 @@
 """
-Router Híbrido LLM (Ollama/Groq) Optimizado para Open Claw
-Enrutamiento inteligente con mínimo latency
+Router Híbrido LLM (Modelos Chinos Gratuitos + Ollama Local)
+Enrutamiento inteligente con modelos Qwen, DeepSeek, Yi, ChatGLM sin APIs externas
 """
 
 import asyncio
@@ -16,10 +16,13 @@ logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Enum):
-    """Proveedores soportados"""
-    OLLAMA = "ollama"
-    GROQ = "groq"
-    OPENCLAW = "openclaw"
+    """Proveedores soportados - Modelos chinos gratuitos y locales"""
+    QWEN = "qwen"           # Alibaba Qwen (open-source)
+    DEEPSEEK = "deepseek"   # DeepSeek AI (open-source)
+    YI = "yi"               # 01.AI Yi models (open-source)
+    CHATGLM = "chatglm"     # Zhipu ChatGLM (open-source)
+    INTERNLM = "internlm"   # Shanghai AI Lab InternLM
+    OLLAMA = "ollama"       # Local con modelos chinos
 
 
 @dataclass
@@ -31,6 +34,7 @@ class ProviderConfig:
     timeout: float = 30.0
     max_retries: int = 3
     priority: int = 1
+    is_local: bool = True
 
 
 @dataclass
@@ -46,7 +50,8 @@ class RoutingDecision:
 
 class HybridLLMRouter:
     """
-    Router híbrido optimizado para Open Claw
+    Router híbrido para modelos chinos gratuitos (Qwen, DeepSeek, Yi, ChatGLM, InternLM)
+    + Ollama local. Sin dependencias de APIs externas.
     Selección inteligente de proveedor según contexto
     """
     
@@ -64,30 +69,52 @@ class HybridLLMRouter:
         self._cache: Dict[str, Tuple[Any, datetime]] = {}
         self._health_status: Dict[LLMProvider, bool] = {}
         
-        # Configurar proveedores por defecto
         self._initialize_default_configs()
         
     def _initialize_default_configs(self) -> None:
-        """Inicializa configuraciones por defecto"""
+        """Inicializa configuraciones con modelos chinos open-source"""
         self._configs = {
+            LLMProvider.QWEN: ProviderConfig(
+                endpoint="http://localhost:11434/api/generate",
+                model="qwen2.5:7b",
+                timeout=60.0,
+                priority=0,
+                is_local=True
+            ),
+            LLMProvider.DEEPSEEK: ProviderConfig(
+                endpoint="http://localhost:11434/api/generate",
+                model="deepseek-coder:6.7b",
+                timeout=60.0,
+                priority=1,
+                is_local=True
+            ),
+            LLMProvider.YI: ProviderConfig(
+                endpoint="http://localhost:11434/api/generate",
+                model="yi:34b",
+                timeout=60.0,
+                priority=2,
+                is_local=True
+            ),
+            LLMProvider.CHATGLM: ProviderConfig(
+                endpoint="http://localhost:11434/api/generate",
+                model="chatglm3:6b",
+                timeout=60.0,
+                priority=3,
+                is_local=True
+            ),
+            LLMProvider.INTERNLM: ProviderConfig(
+                endpoint="http://localhost:11434/api/generate",
+                model="internlm2:7b",
+                timeout=60.0,
+                priority=4,
+                is_local=True
+            ),
             LLMProvider.OLLAMA: ProviderConfig(
                 endpoint="http://localhost:11434/api/generate",
-                model="llama3.2:latest",
+                model="qwen2.5:latest",
                 timeout=60.0,
-                priority=2
-            ),
-            LLMProvider.GROQ: ProviderConfig(
-                endpoint="https://api.groq.com/openai/v1/chat/completions",
-                model="llama-3.2-90b-vision-preview",
-                api_key=None,  # Configurar via env
-                timeout=30.0,
-                priority=1
-            ),
-            LLMProvider.OPENCLAW: ProviderConfig(
-                endpoint="http://localhost:8080/v1/chat/completions",
-                model="openclaw-model",
-                timeout=45.0,
-                priority=0  # Máxima prioridad para Open Claw
+                priority=5,
+                is_local=True
             )
         }
         
@@ -104,128 +131,96 @@ class HybridLLMRouter:
             timeout=aiohttp.ClientTimeout(total=60)
         )
         
-        # Verificar salud inicial
         await self._check_all_providers_health()
         
-        logger.info("HybridLLMRouter initialized with Open Claw priority")
+        logger.info("HybridLLMRouter initialized with Chinese open-source models")
         
     async def _check_all_providers_health(self) -> None:
         """Verifica salud de todos los proveedores"""
-        tasks = [self._check_provider_health(provider) for provider in LLMProvider]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        await self._check_provider_health(LLMProvider.OLLAMA)
         
-        for provider, result in zip(LLMProvider, results):
-            self._health_status[provider] = isinstance(result, bool) and result
-            
     async def _check_provider_health(self, provider: LLMProvider) -> bool:
-        """Verifica salud de un proveedor específico"""
-        if provider not in self._configs:
-            return False
-            
-        config = self._configs[provider]
-        
+        """Verifica salud de Ollama local"""
         try:
-            if provider == LLMProvider.OLLAMA:
-                async with self._session.get(
-                    "http://localhost:11434/api/tags",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    return response.status == 200
-                    
-            elif provider == LLMProvider.GROQ:
-                if not config.api_key:
-                    return False
-                async with self._session.get(
-                    f"{config.endpoint.split('/chat')[0]}/models",
-                    headers={"Authorization": f"Bearer {config.api_key}"},
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    return response.status == 200
-                    
-            elif provider == LLMProvider.OPENCLAW:
-                async with self._session.get(
-                    f"{config.endpoint.split('/chat')[0]}/health",
-                    timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
-                    return response.status == 200
-                    
+            async with self._session.get(
+                "http://localhost:11434/api/tags",
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                is_healthy = response.status == 200
+                for p in LLMProvider:
+                    self._health_status[p] = is_healthy
+                return is_healthy
         except Exception as e:
-            logger.warning(f"Health check failed for {provider.value}: {e}")
+            logger.warning(f"Ollama health check failed: {e}")
+            for p in LLMProvider:
+                self._health_status[p] = False
             return False
-            
-        return False
         
     def select_provider(
         self, 
         prompt_length: int, 
         context: Optional[str] = None,
         streaming: bool = False,
-        priority_quality: bool = False
+        priority_quality: bool = False,
+        code_task: bool = False
     ) -> RoutingDecision:
-        """
-        Selecciona proveedor óptimo basado en múltiples factores
-        Optimizado para decisión rápida
-        """
+        """Selecciona proveedor óptimo basado en múltiples factores"""
         candidates = []
         
         for provider, config in self._configs.items():
-            # Verificar salud
             if not self._health_status.get(provider, False):
                 continue
                 
-            # Calcular score
             score = 0.0
             reasons = []
             
-            # Prioridad base
-            score += (3 - config.priority) * 10
+            # Prioridad base (menor número = mayor prioridad)
+            score += (6 - config.priority) * 5
             
-            # Open Claw tiene máxima prioridad
-            if provider == LLMProvider.OPENCLAW:
-                score += 50
-                reasons.append("Open Claw integration")
+            # Qwen máxima prioridad por defecto
+            if provider == LLMProvider.QWEN:
+                score += 20
+                reasons.append("Qwen default")
                 
-            # Longitud del prompt
-            if prompt_length > 10000:
-                if provider == LLMProvider.GROQ:
-                    score += 20
-                    reasons.append("Long context handling")
-                    
-            # Streaming preference
+            # DeepSeek ESPECÍFICO para código (override)
+            if code_task and provider == LLMProvider.DEEPSEEK:
+                score += 100  # Máxima prioridad para código
+                reasons.append("Code specialist (DeepSeek)")
+                
+            # Yi ESPECÍFICO para contexto largo (override)
+            if prompt_length > 10000 and provider == LLMProvider.YI:
+                score += 80  # Alta prioridad para contexto largo
+                reasons.append("Long context (Yi-34B)")
+                
+            # Streaming
             if streaming:
-                if provider == LLMProvider.OLLAMA:
-                    score += 15
-                    reasons.append("Streaming optimized")
-                    
-            # Quality priority
+                score += 10
+                reasons.append("Streaming")
+                
+            # Calidad
             if priority_quality:
-                if provider == LLMProvider.GROQ:
-                    score += 25
-                    reasons.append("High quality mode")
+                if provider == LLMProvider.YI:
+                    score += 30
+                    reasons.append("High quality (Yi-34B)")
+                elif provider == LLMProvider.QWEN:
+                    score += 20
+                    reasons.append("High quality (Qwen)")
                     
-            # Estimación de latencia
-            latency_est = config.timeout * 0.5
-            if provider == LLMProvider.OPENCLAW:
-                latency_est = 0.3  # Local, baja latencia
-            elif provider == LLMProvider.OLLAMA:
-                latency_est = 1.0  # Local, media latencia
+            # Latencia estimada
+            latency_est = 0.8
+            if provider == LLMProvider.CHATGLM:
+                latency_est = 0.6
+            elif provider == LLMProvider.QWEN:
+                latency_est = 0.7
                 
-            # Estimación de costo
-            cost_est = 0.0
-            if provider == LLMProvider.GROQ:
-                cost_est = prompt_length * 0.00001  # Aproximado
-                
+            cost_est = 0.0  # Todos gratuitos
+            
             candidates.append((
-                provider,
-                config,
-                score,
-                latency_est,
-                cost_est,
-                "; ".join(reasons) if reasons else "Default selection"
+                provider, config, score, latency_est, cost_est,
+                "; ".join(reasons) if reasons else "Default"
             ))
             
         if not candidates:
-            # Fallback a Ollama local
             config = self._configs[LLMProvider.OLLAMA]
             return RoutingDecision(
                 provider=LLMProvider.OLLAMA,
@@ -233,10 +228,9 @@ class HybridLLMRouter:
                 confidence=0.5,
                 latency_estimate=1.0,
                 cost_estimate=0.0,
-                reason="Fallback - no providers available"
+                reason="Fallback - Ollama local"
             )
             
-        # Seleccionar mejor candidato
         best = max(candidates, key=lambda x: x[2])
         
         return RoutingDecision(
@@ -253,40 +247,28 @@ class HybridLLMRouter:
         prompt: str,
         system_prompt: Optional[str] = None,
         streaming: bool = False,
+        code_task: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        Enruta solicitud al proveedor óptimo
-        """
+        """Enruta solicitud al proveedor óptimo"""
         start_time = time.time()
         self._stats['requests'] += 1
         
-        # Seleccionar proveedor
         decision = self.select_provider(
             prompt_length=len(prompt),
             context=kwargs.get('context'),
             streaming=streaming,
-            priority_quality=kwargs.get('priority_quality', False)
+            priority_quality=kwargs.get('priority_quality', False),
+            code_task=code_task
         )
         
         logger.info(f"Routing to {decision.provider.value}: {decision.reason}")
         
         try:
-            # Ejecutar request
-            if decision.provider == LLMProvider.OPENCLAW:
-                result = await self._request_openclaw(
-                    prompt, system_prompt, streaming, **kwargs
-                )
-            elif decision.provider == LLMProvider.GROQ:
-                result = await self._request_groq(
-                    prompt, system_prompt, streaming, **kwargs
-                )
-            else:  # OLLAMA
-                result = await self._request_ollama(
-                    prompt, system_prompt, streaming, **kwargs
-                )
-                
-            # Actualizar stats
+            result = await self._request_ollama(
+                prompt, system_prompt, streaming, decision.model
+            )
+            
             elapsed = time.time() - start_time
             self._stats['success'] += 1
             self._stats['avg_latency'] = (
@@ -306,106 +288,31 @@ class HybridLLMRouter:
             self._stats['failures'] += 1
             logger.error(f"Request failed: {e}")
             
-            # Reintentar con fallback
             if self._stats['failures'] < 3:
                 logger.info("Attempting fallback...")
-                return await self._fallback_request(prompt, system_prompt, **kwargs)
+                return await self._fallback_request(prompt, system_prompt)
                 
             raise
-            
-    async def _request_openclaw(
-        self,
-        prompt: str,
-        system_prompt: Optional[str],
-        streaming: bool,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """Request a Open Claw optimizado"""
-        config = self._configs[LLMProvider.OPENCLAW]
-        
-        payload = {
-            "model": config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt or "Eres GenesyX, sistema operativo de conciencia personal."},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": streaming
-        }
-        
-        async with self._session.post(
-            config.endpoint,
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=config.timeout)
-        ) as response:
-            response.raise_for_status()
-            
-            if streaming:
-                return {"stream": True, "response": response.content}
-            else:
-                data = await response.json()
-                return {
-                    "text": data.get("choices", [{}])[0].get("message", {}).get("content", ""),
-                    "raw": data
-                }
-                
-    async def _request_groq(
-        self,
-        prompt: str,
-        system_prompt: Optional[str],
-        streaming: bool,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """Request a Groq"""
-        config = self._configs[LLMProvider.GROQ]
-        
-        headers = {
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": config.model,
-            "messages": [
-                {"role": "system", "content": system_prompt or "Eres GenesyX."},
-                {"role": "user", "content": prompt}
-            ]
-        }
-        
-        async with self._session.post(
-            config.endpoint,
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=config.timeout)
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-            
-            return {
-                "text": data.get("choices", [{}])[0].get("message", {}).get("content", ""),
-                "raw": data
-            }
             
     async def _request_ollama(
         self,
         prompt: str,
         system_prompt: Optional[str],
         streaming: bool,
-        **kwargs
+        model: str
     ) -> Dict[str, Any]:
-        """Request a Ollama local"""
-        config = self._configs[LLMProvider.OLLAMA]
-        
+        """Request a Ollama con modelo específico"""
         payload = {
-            "model": config.model,
+            "model": model,
             "prompt": prompt,
-            "system": system_prompt or "Eres GenesyX.",
+            "system": system_prompt or "Eres GenesyX, sistema operativo de conciencia personal.",
             "stream": streaming
         }
         
         async with self._session.post(
-            config.endpoint,
+            "http://localhost:11434/api/generate",
             json=payload,
-            timeout=aiohttp.ClientTimeout(total=config.timeout)
+            timeout=aiohttp.ClientTimeout(total=60)
         ) as response:
             response.raise_for_status()
             
@@ -421,12 +328,13 @@ class HybridLLMRouter:
     async def _fallback_request(
         self,
         prompt: str,
-        system_prompt: Optional[str],
-        **kwargs
+        system_prompt: Optional[str]
     ) -> Dict[str, Any]:
-        """Request de fallback a Ollama"""
-        logger.warning("Using fallback to Ollama")
-        return await self._request_ollama(prompt, system_prompt, False, **kwargs)
+        """Request de fallback"""
+        logger.warning("Using fallback to default model")
+        return await self._request_ollama(
+            prompt, system_prompt, False, "qwen2.5:latest"
+        )
         
     def get_stats(self) -> Dict[str, Any]:
         """Obtiene estadísticas del router"""
