@@ -1,0 +1,31 @@
+{
+  "agents": {
+    "arquitecto": {
+      "role": "primary",
+      "subagents": ["hermes", "openclaw"],
+      "delegation": {"requires_authorization": true, "minimum_privilege": true, "redact_secrets": true, "review_outputs": true, "human_approval_for_high_impact": true},
+      "allowed_tasks": ["audit", "refactor", "bugfix", "tests", "documentation"]
+    },
+    "guardian": {
+      "role": "primary",
+      "subagents": ["hermes", "openclaw"],
+      "delegation": {"requires_authorization": true, "redact_secrets": true, "no_secret_values": true, "review_outputs": true},
+      "allowed_tasks": ["secret_scan", "configuration_review", "redaction", "remediation_plan"]
+    },
+    "escudo": {
+      "role": "primary",
+      "subagents": ["hermes", "openclaw"],
+      "delegation": {"requires_authorization": true, "minimum_privilege": true, "defensive_only": true, "review_outputs": true, "human_approval_for_high_impact": true},
+      "allowed_tasks": ["threat_model", "dependency_review", "access_review", "defensive_fix", "validation"]
+    },
+    "hermes": {"role": "subordinate", "requires_parent_assignment": true, "can_modify_identity_or_model": false},
+    "openclaw": {"role": "subordinate", "requires_parent_assignment": true, "can_modify_identity_or_model": false}
+  },
+  "policies": {
+    "no_real_secrets": true,
+    "auditability": true,
+    "human_review": true,
+    "no_external_control_claims": true,
+    "no_offensive_actions": true
+  }
+}
